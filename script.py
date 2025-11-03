@@ -4,6 +4,7 @@ import sys # Module provides access to Python-specific system parameters and fun
 import random
 
 import numpy as np
+import matplotlib.pyplot as plt
 
 # Step 2: Establish path to SUMO (SUMO_HOME)
 if 'SUMO_HOME' in os.environ:
@@ -19,7 +20,7 @@ import traci
 
 # Step 4: Define Sumo configuration
 ctrl_vehicle_ids = ["t_y", "t_x"]
-depart_delays = {0,0}#{vid: random.uniform(0, 2) for vid in ctrl_vehicle_ids}
+depart_delays = {"t_x":0,"t_y":0}#{vid: random.uniform(0, 2) for vid in ctrl_vehicle_ids}
 print(ctrl_vehicle_ids)
 print(depart_delays)
 
@@ -30,15 +31,15 @@ n_steps = 25                        # number of steps
 d_vals = np.linspace(-60, 60, 121)  # possible distances from intersection
 v_vals = np.linspace(0, 20, 21)     # velocity grid
 a_vals = np.linspace(-2, 2, 9)
-safe_dist = 10.0                     # "collision zone" around center
-max_iters = 7
+safe_dist = 5                     # "collision zone" around center
+max_iters = 10
 
 
 # Weights
 w_a = 1000     # acceleration penalty
 w_v = 1000     # velocity change penalty
 w_c = 5000.0   # collision penalty
-w_f = 3000.0   # final distance (goal reaching) penalty
+w_f = 40000.0   # final distance (goal reaching) penalty
 
 
 Sumo_config = [
@@ -58,12 +59,8 @@ total_speed = 0
 
 
 # ==== Initialization ====
-np.random.seed(42)
+# np.random.seed(42)
 # Random starting distances between 30–50 m from center
-dA0 = np.random.uniform(30, 50)
-dB0 = np.random.uniform(30, 50)
-vA0 = np.random.uniform(5, 10)
-vB0 = np.random.uniform(5, 10)
 
 
 # Step 7: Define Functions
@@ -74,8 +71,11 @@ def cost_step(d, v, a, v_prev, d_other):
 
     # Both close to center → collision risk
     # Use Gaussian form for smoother decay
-    near_center = np.exp(-((d / safe_dist) ** 2)) * np.exp(-((d_other / safe_dist) ** 2))
+    near_center = np.exp(-((d / (2 * safe_dist)) ** 2)) * np.exp(-((d_other / (2 * safe_dist)) ** 2))
+
     collision_penalty = w_c * near_center
+
+    print(f"Cost step: d={d}, v={v}, a={a}, v_prev={v_prev}, d_other={d_other}, smooth={smooth}, collision_penalty={collision_penalty}")
 
     return smooth + collision_penalty
 
@@ -97,7 +97,7 @@ def dp_optimize(d_other_traj, d0, v0):
                     continue
 
                 for a in a_vals:
-                    d_new = d_prev - v_prev * dt   # <-- allow crossing center (no clamp)
+                    d_new = d_prev - (v_prev * dt + 0.5*a*dt*dt)   # <-- allow crossing center (no clamp)
                     v_new = v_prev + a * dt
 
                     # Skip invalid states
@@ -137,20 +137,6 @@ def within_ctzone(vid, edge, position_on_edge):
     else:
         return False
 
-
-
-
-# Step 8: Take simulation steps until there are no more vehicles in the network
-# while traci.simulation.getMinExpectedNumber() > 0:
-#     traci.simulationStep() # Move simulation forward 1 step
-#     # Here you can decide what to do with simulation data at each step
-#     vehicle_ids = traci.vehicle.getIDList()
-#     print(traci.vehicle.getIDList())
-#     for vid in vehicle_ids:
-#         x, y = traci.vehicle.getPosition(vid)
-#         print()
-#         print(f"Vehicle {vid} at position x={x}, y={y}")
-
 delay_set = {}
 
 for veh_id in ctrl_vehicle_ids:
@@ -174,7 +160,8 @@ while traci.simulation.getMinExpectedNumber() > 0:
     # vehicle_ids = traci.vehicle.getIDList()
     
     for vid in list(traci.vehicle.getIDList()):
-
+        
+        traci.vehicle.setSpeedMode(vid, 0b00000)
         if delay_set[vid] :
             # print(delay_set[vid])
             if vid in depart_delays and sim_time < depart_delays[vid]:
@@ -203,6 +190,12 @@ while traci.simulation.getMinExpectedNumber() > 0:
         d_y = 150 - float(traci.vehicle.getDistance("t_y"))
         speed_x = traci.vehicle.getSpeed("t_x")
         speed_y = traci.vehicle.getSpeed("t_y")
+        dA0 = d_x
+        dB0 = d_y
+        vA0 = speed_x
+        vB0 = speed_y
+        print(f"Initial distances: dA0={dA0}, dB0={dB0}, vA0={vA0}, vB0={vB0}")
+
 
 
         dA = np.linspace(d_x, -d_x, n_steps)
@@ -226,25 +219,33 @@ while traci.simulation.getMinExpectedNumber() > 0:
                 print("Converged.")
                 break
         optimized = True
+
+
+        # t = np.arange(n_steps) * dt
+        # plt.figure(figsize=(10,4))
+        # plt.plot(t, vA, 'r--', label='Velocity A')
+        # plt.plot(t, vB, 'b--', label='Velocity B')
+        # plt.xlabel('Time (s)')
+        # plt.ylabel('Velocity (m/s)')
+        # plt.title('Vehicle Velocities During Crossing Optimization')
+        # plt.legend()
+        # plt.grid(True)
+        # plt.show()
         # Set the optimized speeds for the vehicles
 
-    if optimized & (not completed):
+    if optimized and (not completed):
         traci.vehicle.setSpeed("t_x", vA[current_step])
         traci.vehicle.setSpeed("t_y", vB[current_step])
         current_step += 1
         if current_step >= n_steps:
             completed = True
+        
+    if completed:
+        traci.vehicle.setSpeedMode("t_x", 0b011111)
+        traci.vehicle.setSpeedMode("t_y", 0b011111)
     speech_list_x.append(traci.vehicle.getSpeed("t_x"))
     speech_list_y.append(traci.vehicle.getSpeed("t_y"))
-# plt.figure(figsize=(10,4))
-# plt.plot(t, vA, 'r--', label='Velocity A')
-# plt.plot(t, vB, 'b--', label='Velocity B')
-# plt.xlabel('Time (s)')
-# plt.ylabel('Velocity (m/s)')
-# plt.title('Vehicle Velocities During Crossing Optimization')
-# plt.legend()
-# plt.grid(True)
-# plt.show()
+
 
 
 
