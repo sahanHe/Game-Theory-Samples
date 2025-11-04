@@ -31,14 +31,14 @@ n_steps = 25                        # number of steps
 d_vals = np.linspace(-60, 60, 121)  # possible distances from intersection
 v_vals = np.linspace(0, 20, 21)     # velocity grid
 a_vals = np.linspace(-2, 2, 9)
-safe_dist = 5                     # "collision zone" around center
+safe_dist = 10                     # "collision zone" around center
 max_iters = 10
 
 
 # Weights
 w_a = 1000     # acceleration penalty
 w_v = 1000     # velocity change penalty
-w_c = 5000.0   # collision penalty
+w_c = 20000.0   # collision penalty
 w_f = 40000.0   # final distance (goal reaching) penalty
 
 
@@ -71,11 +71,15 @@ def cost_step(d, v, a, v_prev, d_other):
 
     # Both close to center → collision risk
     # Use Gaussian form for smoother decay
-    near_center = np.exp(-((d / (2 * safe_dist)) ** 2)) * np.exp(-((d_other / (2 * safe_dist)) ** 2))
+    if d + d_other < safe_dist:
+        near_center = 1.0
+    else:
+        near_center = 0.0
+    #near_center =  np.exp(-((d / (2 * safe_dist)) ** 2)) * np.exp(-((d_other / (2 * safe_dist)) ** 2))
 
     collision_penalty = w_c * near_center
 
-    print(f"Cost step: d={d}, v={v}, a={a}, v_prev={v_prev}, d_other={d_other}, smooth={smooth}, collision_penalty={collision_penalty}")
+    # print(f"Cost step: d={d}, v={v}, a={a}, v_prev={v_prev}, d_other={d_other}, smooth={smooth}, collision_penalty={collision_penalty}")
 
     return smooth + collision_penalty
 
@@ -118,7 +122,9 @@ def dp_optimize(d_other_traj, d0, v0):
 
     # ---- Final cost: encourage reaching the opposite side ----
     d_goal = -d0  # go to the mirrored position (pass through 0)
-    dp[-1] += w_f * ((d_vals - d_goal) ** 2)[:, None]
+    v_goal = v0  # maintain initial speed
+    dp[-1] += w_f * ((d_vals - d_goal))[:, None]
+
 
     # ---- Backtrack optimal path ----
     id_curr, iv_curr = np.unravel_index(np.argmin(dp[-1]), dp[-1].shape)
@@ -180,12 +186,12 @@ while traci.simulation.getMinExpectedNumber() > 0:
             position_on_edge = traci.vehicle.getLanePosition(vid)   # Position along the lane (in meters)
             route_index = route.index(current_edge) if current_edge in route else -1
             ct_plus = within_ctzone(vid, current_edge, position_on_edge)
-            print(f"Vehicle {vid}: on edge {current_edge}, is in ctrl zone : {ct_plus}, with position {position_on_edge}")
+            # print(f"Vehicle {vid}: on edge {current_edge}, is in ctrl zone : {ct_plus}, with position {position_on_edge}")
             vehicle_status[vid] = ct_plus
     if vehicle_status["t_x"] and vehicle_status["t_y"] and not optimized:
         speed_x = traci.vehicle.getSpeed("t_x")
         speed_y = traci.vehicle.getSpeed("t_y")
-        print(f"Both vehicles in control zone: t_x speed={speed_x}, t_y speed={speed_y}")
+        # print(f"Both vehicles in control zone: t_x speed={speed_x}, t_y speed={speed_y}")
         d_x = 150 - float(traci.vehicle.getDistance("t_x"))
         d_y = 150 - float(traci.vehicle.getDistance("t_y"))
         speed_x = traci.vehicle.getSpeed("t_x")
@@ -194,7 +200,7 @@ while traci.simulation.getMinExpectedNumber() > 0:
         dB0 = d_y
         vA0 = speed_x
         vB0 = speed_y
-        print(f"Initial distances: dA0={dA0}, dB0={dB0}, vA0={vA0}, vB0={vB0}")
+        # print(f"Initial distances: dA0={dA0}, dB0={dB0}, vA0={vA0}, vB0={vB0}")
 
 
 
@@ -221,21 +227,37 @@ while traci.simulation.getMinExpectedNumber() > 0:
         optimized = True
 
 
-        # t = np.arange(n_steps) * dt
-        # plt.figure(figsize=(10,4))
-        # plt.plot(t, vA, 'r--', label='Velocity A')
-        # plt.plot(t, vB, 'b--', label='Velocity B')
-        # plt.xlabel('Time (s)')
-        # plt.ylabel('Velocity (m/s)')
-        # plt.title('Vehicle Velocities During Crossing Optimization')
-        # plt.legend()
-        # plt.grid(True)
-        # plt.show()
+        t = np.arange(n_steps) * dt
+
+        plt.figure(figsize=(10,4))
+        plt.plot(t, dA, 'r--', label='Distance A')
+        plt.plot(t, dB, 'b--', label='Distance B')
+        plt.xlabel('Time (s)')
+        plt.ylabel('Distance (m)')
+        plt.title('Vehicle distances During Crossing Optimization')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
+        plt.figure(figsize=(10,4))
+        plt.plot(t, vA, 'r--', label='Velocity A')
+        plt.plot(t, vB, 'b--', label='Velocity B')
+        plt.xlabel('Time (s)')
+        plt.ylabel('Velocity (m/s)')
+        plt.title('Vehicle Velocities During Crossing Optimization')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
         # Set the optimized speeds for the vehicles
 
     if optimized and (not completed):
-        traci.vehicle.setSpeed("t_x", vA[current_step])
-        traci.vehicle.setSpeed("t_y", vB[current_step])
+        d_x = 150 - float(traci.vehicle.getDistance("t_x"))
+        d_y = 150 - float(traci.vehicle.getDistance("t_y"))
+        print(f"Step {current_step}: d_x={d_x}, d_y={d_y}, setting speeds vA={vA[current_step]}, vB={vB[current_step]}")
+        if d_x > 0:
+            traci.vehicle.setSpeed("t_x", vA[current_step])
+        if d_y > 0:
+            traci.vehicle.setSpeed("t_y", vB[current_step])
         current_step += 1
         if current_step >= n_steps:
             completed = True
